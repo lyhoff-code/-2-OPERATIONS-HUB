@@ -1,0 +1,556 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// CORE ENTITIES
+// ============================================
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  logo      String?
+  website   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  users         User[]
+  customers     Customer[]
+  subscriptions Subscription[]
+  invoices      Invoice[]
+  tickets       Ticket[]
+  articles      Article[]
+  plans         Plan[]
+  coupons       Coupon[]
+
+  // Settings
+  stripeAccountId   String?
+  emailSettings     Json?
+  brandingSettings  Json?
+  dunningSettings   Json?
+  supportSettings   Json?
+}
+
+model User {
+  id             String   @id @default(cuid())
+  email          String   @unique
+  name           String?
+  avatar         String?
+  role           UserRole @default(MEMBER)
+  organizationId String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  // Relations
+  organization    Organization     @relation(fields: [organizationId], references: [id])
+  assignedTickets Ticket[]         @relation("AssignedTickets")
+  ticketComments  TicketComment[]
+  inboxMessages   InboxMessage[]
+
+  @@index([organizationId])
+}
+
+enum UserRole {
+  OWNER
+  ADMIN
+  MEMBER
+  SUPPORT
+}
+
+// ============================================
+// REVENUE MANAGER ENTITIES
+// ============================================
+
+model Customer {
+  id               String   @id @default(cuid())
+  organizationId   String
+  email            String
+  name             String
+  phone            String?
+  company          String?
+  address          Json?
+  stripeCustomerId String?  @unique
+  metadata         Json?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  // Relations
+  organization  Organization   @relation(fields: [organizationId], references: [id])
+  subscriptions Subscription[]
+  invoices      Invoice[]
+  payments      Payment[]
+  dunningEvents DunningEvent[]
+  tickets       Ticket[]
+  conversations Conversation[]
+
+  // Metrics cache
+  lifetimeValue Float @default(0)
+  totalPayments Int   @default(0)
+  churnRisk     Float @default(0)
+
+  @@unique([organizationId, email])
+  @@index([organizationId])
+  @@index([stripeCustomerId])
+}
+
+model Plan {
+  id             String       @id @default(cuid())
+  organizationId String
+  name           String
+  description    String?
+  tier           PlanTier     @default(BASIC)
+  interval       PlanInterval @default(MONTHLY)
+  price          Float
+  currency       String       @default("USD")
+  features       Json?
+  stripePriceId  String?      @unique
+  active         Boolean      @default(true)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  // Relations
+  organization  Organization   @relation(fields: [organizationId], references: [id])
+  subscriptions Subscription[]
+  coupons       CouponPlan[]
+
+  @@index([organizationId])
+}
+
+enum PlanTier {
+  BASIC
+  PRO
+  ENTERPRISE
+  CUSTOM
+}
+
+enum PlanInterval {
+  MONTHLY
+  YEARLY
+  ONE_TIME
+}
+
+model Subscription {
+  id                     String             @id @default(cuid())
+  organizationId         String
+  customerId             String
+  planId                 String
+  status                 SubscriptionStatus @default(ACTIVE)
+  stripeSubscriptionId   String?            @unique
+  currentPeriodStart     DateTime
+  currentPeriodEnd       DateTime
+  cancelAtPeriodEnd      Boolean            @default(false)
+  canceledAt             DateTime?
+  trialStart             DateTime?
+  trialEnd               DateTime?
+  quantity               Int                @default(1)
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
+
+  // Relations
+  organization Organization @relation(fields: [organizationId], references: [id])
+  customer     Customer     @relation(fields: [customerId], references: [id])
+  plan         Plan         @relation(fields: [planId], references: [id])
+  invoices     Invoice[]
+
+  @@index([organizationId])
+  @@index([customerId])
+  @@index([status])
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  UNPAID
+  TRIALING
+  PAUSED
+}
+
+model Invoice {
+  id                String        @id @default(cuid())
+  organizationId    String
+  customerId        String
+  subscriptionId    String?
+  stripeInvoiceId   String?       @unique
+  invoiceNumber     String
+  status            InvoiceStatus @default(DRAFT)
+  subtotal          Float
+  tax               Float         @default(0)
+  discount          Float         @default(0)
+  total             Float
+  currency          String        @default("USD")
+  dueDate           DateTime?
+  paidAt            DateTime?
+  items             Json
+  notes             String?
+  pdfUrl            String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  // Relations
+  organization Organization  @relation(fields: [organizationId], references: [id])
+  customer     Customer      @relation(fields: [customerId], references: [id])
+  subscription Subscription? @relation(fields: [subscriptionId], references: [id])
+  payments     Payment[]
+
+  @@index([organizationId])
+  @@index([customerId])
+  @@index([status])
+}
+
+enum InvoiceStatus {
+  DRAFT
+  SENT
+  PAID
+  VOID
+  UNCOLLECTIBLE
+  REFUNDED
+}
+
+model Payment {
+  id               String        @id @default(cuid())
+  customerId       String
+  invoiceId        String?
+  stripePaymentId  String?       @unique
+  amount           Float
+  currency         String        @default("USD")
+  status           PaymentStatus @default(PENDING)
+  paymentMethod    String?
+  failureReason    String?
+  refundedAmount   Float         @default(0)
+  metadata         Json?
+  createdAt        DateTime      @default(now())
+
+  // Relations
+  customer Customer @relation(fields: [customerId], references: [id])
+  invoice  Invoice? @relation(fields: [invoiceId], references: [id])
+
+  @@index([customerId])
+  @@index([status])
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+model Coupon {
+  id             String       @id @default(cuid())
+  organizationId String
+  code           String
+  name           String
+  discountType   DiscountType @default(PERCENTAGE)
+  discountValue  Float
+  maxRedemptions Int?
+  redemptions    Int          @default(0)
+  validFrom      DateTime     @default(now())
+  validUntil     DateTime?
+  active         Boolean      @default(true)
+  stripeCouponId String?      @unique
+  createdAt      DateTime     @default(now())
+
+  // Relations
+  organization Organization @relation(fields: [organizationId], references: [id])
+  plans        CouponPlan[]
+
+  @@unique([organizationId, code])
+  @@index([organizationId])
+}
+
+model CouponPlan {
+  couponId String
+  planId   String
+
+  coupon Coupon @relation(fields: [couponId], references: [id])
+  plan   Plan   @relation(fields: [planId], references: [id])
+
+  @@id([couponId, planId])
+}
+
+enum DiscountType {
+  PERCENTAGE
+  FIXED_AMOUNT
+}
+
+// ============================================
+// DUNNING SYSTEM
+// ============================================
+
+model DunningEvent {
+  id           String           @id @default(cuid())
+  customerId   String
+  eventType    DunningEventType
+  dayNumber    Int
+  emailSent    Boolean          @default(false)
+  emailSentAt  DateTime?
+  resolved     Boolean          @default(false)
+  resolvedAt   DateTime?
+  metadata     Json?
+  createdAt    DateTime         @default(now())
+
+  // Relations
+  customer Customer @relation(fields: [customerId], references: [id])
+
+  @@index([customerId])
+  @@index([eventType])
+}
+
+enum DunningEventType {
+  PAYMENT_FAILED
+  RETRY_SCHEDULED
+  RETRY_ATTEMPTED
+  CARD_UPDATE_REQUESTED
+  FINAL_WARNING
+  SERVICE_PAUSED
+  PAYMENT_RECOVERED
+}
+
+// ============================================
+// SUPPORT BOT ENTITIES
+// ============================================
+
+model Ticket {
+  id             String         @id @default(cuid())
+  organizationId String
+  customerId     String?
+  assignedToId   String?
+  ticketNumber   String
+  subject        String
+  description    String
+  status         TicketStatus   @default(OPEN)
+  priority       TicketPriority @default(MEDIUM)
+  category       String?
+  source         TicketSource   @default(CHAT)
+  slaDeadline    DateTime?
+  firstResponseAt DateTime?
+  resolvedAt     DateTime?
+  satisfaction   Int?           // 1-5 scale
+  metadata       Json?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  // Relations
+  organization Organization    @relation(fields: [organizationId], references: [id])
+  customer     Customer?       @relation(fields: [customerId], references: [id])
+  assignedTo   User?           @relation("AssignedTickets", fields: [assignedToId], references: [id])
+  comments     TicketComment[]
+  conversation Conversation?
+
+  @@index([organizationId])
+  @@index([customerId])
+  @@index([status])
+  @@index([priority])
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  WAITING
+  RESOLVED
+  CLOSED
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum TicketSource {
+  CHAT
+  EMAIL
+  PHONE
+  WEB_FORM
+  API
+}
+
+model TicketComment {
+  id         String      @id @default(cuid())
+  ticketId   String
+  authorId   String?
+  content    String
+  isInternal Boolean     @default(false)
+  isFromBot  Boolean     @default(false)
+  attachments Json?
+  createdAt  DateTime    @default(now())
+
+  // Relations
+  ticket Ticket @relation(fields: [ticketId], references: [id])
+  author User?  @relation(fields: [authorId], references: [id])
+
+  @@index([ticketId])
+}
+
+model Conversation {
+  id             String             @id @default(cuid())
+  customerId     String
+  ticketId       String?            @unique
+  sessionId      String             @unique
+  status         ConversationStatus @default(ACTIVE)
+  handedOffAt    DateTime?
+  resolvedByBot  Boolean            @default(false)
+  metadata       Json?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  // Relations
+  customer Customer           @relation(fields: [customerId], references: [id])
+  ticket   Ticket?            @relation(fields: [ticketId], references: [id])
+  messages ConversationMessage[]
+
+  @@index([customerId])
+  @@index([status])
+}
+
+enum ConversationStatus {
+  ACTIVE
+  HANDED_OFF
+  RESOLVED
+  ABANDONED
+}
+
+model ConversationMessage {
+  id             String      @id @default(cuid())
+  conversationId String
+  role           MessageRole
+  content        String
+  intent         String?
+  confidence     Float?
+  metadata       Json?
+  createdAt      DateTime    @default(now())
+
+  // Relations
+  conversation Conversation @relation(fields: [conversationId], references: [id])
+
+  @@index([conversationId])
+}
+
+enum MessageRole {
+  USER
+  BOT
+  AGENT
+}
+
+// ============================================
+// KNOWLEDGE BASE
+// ============================================
+
+model Article {
+  id             String        @id @default(cuid())
+  organizationId String
+  title          String
+  slug           String
+  content        String
+  excerpt        String?
+  category       String
+  tags           String[]
+  status         ArticleStatus @default(DRAFT)
+  viewCount      Int           @default(0)
+  helpfulCount   Int           @default(0)
+  notHelpfulCount Int          @default(0)
+  publishedAt    DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  // Relations
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  @@unique([organizationId, slug])
+  @@index([organizationId])
+  @@index([category])
+}
+
+enum ArticleStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+// ============================================
+// SHARED INBOX
+// ============================================
+
+model InboxMessage {
+  id             String             @id @default(cuid())
+  organizationId String
+  assignedToId   String?
+  threadId       String
+  from           String
+  to             String
+  subject        String
+  content        String
+  htmlContent    String?
+  attachments    Json?
+  status         InboxMessageStatus @default(UNREAD)
+  mergedIntoId   String?
+  internalNotes  String?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  // Relations
+  assignedTo User? @relation(fields: [assignedToId], references: [id])
+
+  @@index([organizationId])
+  @@index([threadId])
+  @@index([status])
+}
+
+enum InboxMessageStatus {
+  UNREAD
+  READ
+  REPLIED
+  ARCHIVED
+}
+
+// ============================================
+// METRICS & ANALYTICS
+// ============================================
+
+model RevenueMetric {
+  id             String   @id @default(cuid())
+  organizationId String
+  date           DateTime @db.Date
+  mrr            Float    @default(0)
+  arr            Float    @default(0)
+  newMrr         Float    @default(0)
+  churnedMrr     Float    @default(0)
+  expansionMrr   Float    @default(0)
+  activeCustomers Int     @default(0)
+  newCustomers   Int      @default(0)
+  churnedCustomers Int    @default(0)
+  totalRevenue   Float    @default(0)
+
+  @@unique([organizationId, date])
+  @@index([organizationId])
+}
+
+model SupportMetric {
+  id                    String   @id @default(cuid())
+  organizationId        String
+  date                  DateTime @db.Date
+  totalTickets          Int      @default(0)
+  resolvedByBot         Int      @default(0)
+  resolvedByHuman       Int      @default(0)
+  avgResponseTime       Float?   // in minutes
+  avgResolutionTime     Float?   // in minutes
+  csatScore             Float?   // 1-5 scale average
+  ticketsByCategory     Json?
+  ticketsByPriority     Json?
+
+  @@unique([organizationId, date])
+  @@index([organizationId])
+}
