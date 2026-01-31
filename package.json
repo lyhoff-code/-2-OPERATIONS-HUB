@@ -31,7 +31,7 @@
     "react-dom": "^18.2.0",
     "react-hot-toast": "^2.4.1",
     "react-markdown": "^9.0.1",
-    "square": "^37.1.0",
+    "square": "^37.1.1",
     "stripe": "^14.14.0",
     "zustand": "^4.5.0"
   },
