@@ -80,7 +80,7 @@ const articles = [
   },
 ]
 
-const categories = [...new Set(articles.map((a) => a.category))]
+const categories = Array.from(new Set(articles.map((a) => a.category)))
 
 const statusColors: Record<string, string> = {
   DRAFT: 'bg-gray-100 text-gray-800',
